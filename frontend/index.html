@@ -33,4 +33,226 @@
       }
       .ok { color: #0a7; }
       .bad { color: #c22; }
-      .muted { color: #
+      .muted { color: #666; }
+    </style>
+  </head>
+
+  <body>
+    <h1>ApeRace 5K — ApeChain</h1>
+
+    <div class="box">
+      <div class="row">
+        <button id="btnConnect">Connect Wallet</button>
+        <button id="btnSwitch">Switch / Add ApeChain (33139)</button>
+      </div>
+
+      <div class="row">
+        <div>Wallet: <code id="addr">not connected</code></div>
+        <div>Chain: <code id="chain">?</code></div>
+      </div>
+
+      <hr />
+
+      <div class="row">
+        <label class="muted">Race5k contract address (mainnet):</label><br/>
+        <input id="contract" placeholder="0x..." />
+        <button id="btnSave">Save</button>
+      </div>
+
+      <div class="row">
+        <button id="btnStart">startRace()</button>
+      </div>
+
+      <div class="row">
+        <input id="cp" type="number" min="1" max="10" value="1" />
+        <button id="btnCheckpoint">submitCheckpoint(cp)</button>
+      </div>
+
+      <div class="row">
+        <button id="btnRefresh">Refresh state</button>
+      </div>
+
+      <div class="row">
+        <div>Status: <span id="status" class="muted">idle</span></div>
+        <div>startTime: <code id="startTime">-</code></div>
+        <div>lastCheckpoint: <code id="lastCp">-</code></div>
+        <div>finished: <code id="finished">-</code></div>
+        <div class="muted">Explorer tx: <span id="txlink">-</span></div>
+      </div>
+    </div>
+
+    <!-- ethers.js v6 -->
+    <script src="https://cdn.jsdelivr.net/npm/ethers@6.13.2/dist/ethers.umd.min.js"></script>
+
+    <script>
+      // ---- ApeChain mainnet config
+      const APECHAIN = {
+        chainIdHex: "0x8183", // 33139
+        chainIdDec: 33139,
+        chainName: "ApeChain",
+        rpcUrls: ["https://rpc.apechain.com/http"],
+        blockExplorerUrls: ["https://apescan.io/"],
+        nativeCurrency: { name: "ApeCoin", symbol: "APE", decimals: 18 }
+      };
+
+      // ---- Minimal ABI
+      const ABI = [
+        "function startRace() external",
+        "function submitCheckpoint(uint8 checkpointIndex) external",
+        "function runners(address) view returns (uint8 lastCheckpoint, uint256 startTime, bool finished)"
+      ];
+
+      const el = (id) => document.getElementById(id);
+      const setStatus = (txt, ok = true) => {
+        el("status").textContent = txt;
+        el("status").className = ok ? "ok" : "bad";
+      };
+
+      let provider, signer, userAddress;
+
+      // restore saved contract
+      const saved = localStorage.getItem("aperace_contract");
+      if (saved) el("contract").value = saved;
+
+      function getContractAddr() {
+        const a = el("contract").value.trim();
+        if (!a || !a.startsWith("0x") || a.length < 42) {
+          throw new Error("Enter deployed contract address");
+        }
+        return a;
+      }
+
+      async function connect() {
+        if (!window.ethereum) throw new Error("No injected wallet found");
+        provider = new ethers.BrowserProvider(window.ethereum);
+        await provider.send("eth_requestAccounts", []);
+        signer = await provider.getSigner();
+        userAddress = await signer.getAddress();
+        el("addr").textContent = userAddress;
+        const net = await provider.getNetwork();
+        el("chain").textContent = String(Number(net.chainId));
+        setStatus("connected");
+      }
+
+      async function switchToApeChain() {
+        try {
+          await window.ethereum.request({
+            method: "wallet_switchEthereumChain",
+            params: [{ chainId: APECHAIN.chainIdHex }]
+          });
+        } catch (e) {
+          if (e.code === 4902) {
+            await window.ethereum.request({
+              method: "wallet_addEthereumChain",
+              params: [{
+                chainId: APECHAIN.chainIdHex,
+                chainName: APECHAIN.chainName,
+                nativeCurrency: APECHAIN.nativeCurrency,
+                rpcUrls: APECHAIN.rpcUrls,
+                blockExplorerUrls: APECHAIN.blockExplorerUrls
+              }]
+            });
+          } else {
+            throw e;
+          }
+        }
+        provider = new ethers.BrowserProvider(window.ethereum);
+        if (signer) signer = await provider.getSigner();
+        const net = await provider.getNetwork();
+        el("chain").textContent = String(Number(net.chainId));
+        setStatus("on ApeChain");
+      }
+
+      function getContract() {
+        if (!signer) throw new Error("Connect wallet first");
+        return new ethers.Contract(getContractAddr(), ABI, signer);
+      }
+
+      async function ensureApeChain() {
+        const net = await provider.getNetwork();
+        if (Number(net.chainId) !== APECHAIN.chainIdDec) {
+          throw new Error("Wrong network. Switch to ApeChain (33139).");
+        }
+      }
+
+      async function startRace() {
+        await ensureApeChain();
+        const c = getContract();
+        setStatus("sending startRace()");
+        const tx = await c.startRace();
+        setTx(tx.hash);
+        await tx.wait();
+        setStatus("race started ✅");
+        await refresh();
+      }
+
+      async function submitCheckpoint() {
+        await ensureApeChain();
+        const idx = Number(el("cp").value);
+        const c = getContract();
+        setStatus("sending checkpoint " + idx);
+        const tx = await c.submitCheckpoint(idx);
+        setTx(tx.hash);
+        await tx.wait();
+        setStatus("checkpoint confirmed ✅");
+        await refresh();
+      }
+
+      async function refresh() {
+        const c = getContract();
+        const [lastCheckpoint, startTime, finished] =
+          await c.runners(userAddress);
+
+        el("lastCp").textContent = String(lastCheckpoint);
+        el("startTime").textContent = startTime === 0n ? "-" : String(startTime);
+        el("finished").textContent = String(finished);
+        setStatus("state refreshed");
+      }
+
+      function setTx(hash) {
+        const url = `${APECHAIN.blockExplorerUrls[0]}tx/${hash}`;
+        el("txlink").innerHTML =
+          `<a href="${url}" target="_blank">${hash.slice(0,10)}…</a>`;
+      }
+
+      el("btnConnect").onclick = async () => {
+        try { await connect(); }
+        catch (e) { setStatus(e.message, false); }
+      };
+
+      el("btnSwitch").onclick = async () => {
+        try { await switchToApeChain(); }
+        catch (e) { setStatus(e.message, false); }
+      };
+
+      el("btnSave").onclick = () => {
+        try {
+          localStorage.setItem("aperace_contract", getContractAddr());
+          setStatus("contract saved");
+        } catch (e) {
+          setStatus(e.message, false);
+        }
+      };
+
+      el("btnStart").onclick = async () => {
+        try { await startRace(); }
+        catch (e) { setStatus(e.message, false); }
+      };
+
+      el("btnCheckpoint").onclick = async () => {
+        try { await submitCheckpoint(); }
+        catch (e) { setStatus(e.message, false); }
+      };
+
+      el("btnRefresh").onclick = async () => {
+        try { await refresh(); }
+        catch (e) { setStatus(e.message, false); }
+      };
+
+      if (window.ethereum) {
+        window.ethereum.on("chainChanged", () => location.reload());
+        window.ethereum.on("accountsChanged", () => location.reload());
+      }
+    </script>
+  </body>
+</html>
