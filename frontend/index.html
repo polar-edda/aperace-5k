@@ -1,1 +1,158 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>ApeRace 5K (Curtis)</title>
+    <style>
+      body { font-family: ui-sans-serif, system-ui, -apple-system; max-width: 760px; margin: 24px auto; padding: 0 16px; }
+      button { padding: 10px 14px; margin: 6px 6px 6px 0; cursor: pointer; }
+      input { padding: 10px 12px; width: 140px; }
+      .row { margin: 10px 0; }
+      .box { padding: 12px; border: 1px solid #ddd; border-radius: 12px; }
+      code { background: #f6f6f6; padding: 2px 6px; border-radius: 6px; }
+      .ok { color: #0a7; }
+      .bad { color: #c22; }
+      .muted { color: #666; }
+    </style>
+  </head>
+
+  <body>
+    <h1>ApeRace 5K — Curtis</h1>
+
+    <div class="box">
+      <div class="row">
+        <button id="btnConnect">Connect Wallet</button>
+        <button id="btnSwitch">Switch/Add Curtis (33111)</button>
+      </div>
+
+      <div class="row">
+        <div>Wallet: <code id="addr">not connected</code></div>
+        <div>Chain: <code id="chain">?</code></div>
+      </div>
+
+      <hr />
+
+      <div class="row">
+        <label class="muted">Contract address (deployed Race5k):</label><br/>
+        <input id="contract" placeholder="0x..." />
+        <button id="btnSave">Save</button>
+      </div>
+
+      <div class="row">
+        <button id="btnStart">startRace()</button>
+      </div>
+
+      <div class="row">
+        <input id="cp" type="number" min="1" max="10" value="1" />
+        <button id="btnCheckpoint">submitCheckpoint(cp)</button>
+      </div>
+
+      <div class="row">
+        <button id="btnRefresh">Refresh state</button>
+      </div>
+
+      <div class="row">
+        <div>Status: <span id="status" class="muted">idle</span></div>
+        <div>startTime: <code id="startTime">-</code></div>
+        <div>lastCheckpoint: <code id="lastCp">-</code></div>
+        <div>finished: <code id="finished">-</code></div>
+        <div class="muted">Explorer (tx): <span id="txlink">-</span></div>
+      </div>
+    </div>
+
+    <!-- Ethers v6 (UMD) -->
+    <script src="https://cdn.jsdelivr.net/npm/ethers@6.13.2/dist/ethers.umd.min.js"></script>
+
+    <script>
+      // ---- Curtis config (ApeChain testnet)
+      const CURTIS = {
+        chainIdHex: "0x8167", // 33111
+        chainIdDec: 33111,
+        chainName: "ApeChain Curtis",
+        rpcUrls: ["https://curtis.rpc.caldera.xyz/http"],
+        blockExplorerUrls: ["https://curtis.apescan.io/"],
+        nativeCurrency: { name: "ApeCoin", symbol: "APE", decimals: 18 }
+      };
+
+      // ---- ABI: ONLY the methods we use
+      const ABI = [
+        "function startRace() external",
+        "function submitCheckpoint(uint8 checkpointIndex) external",
+        "function runners(address) view returns (uint8 lastCheckpoint, uint256 startTime, bool finished)"
+      ];
+
+      const el = (id) => document.getElementById(id);
+      const setStatus = (txt, ok=true) => {
+        el("status").textContent = txt;
+        el("status").className = ok ? "ok" : "bad";
+      };
+
+      let provider, signer, userAddress;
+
+      // Load saved contract addr
+      const saved = localStorage.getItem("aperace_contract");
+      if (saved) el("contract").value = saved;
+
+      function getContractAddr() {
+        const a = el("contract").value.trim();
+        if (!a || !a.startsWith("0x") || a.length < 42) throw new Error("Put deployed contract address");
+        return a;
+      }
+
+      async function refreshChainLabel() {
+        if (!provider) return;
+        const net = await provider.getNetwork();
+        el("chain").textContent = `${Number(net.chainId)}`;
+      }
+
+      async function connect() {
+        if (!window.ethereum) throw new Error("No injected wallet found (MetaMask etc.)");
+        provider = new ethers.BrowserProvider(window.ethereum);
+        await provider.send("eth_requestAccounts", []);
+        signer = await provider.getSigner();
+        userAddress = await signer.getAddress();
+        el("addr").textContent = userAddress;
+        await refreshChainLabel();
+        setStatus("connected");
+      }
+
+      async function switchToCurtis() {
+        if (!window.ethereum) throw new Error("No injected wallet found");
+        try {
+          await window.ethereum.request({
+            method: "wallet_switchEthereumChain",
+            params: [{ chainId: CURTIS.chainIdHex }]
+          });
+        } catch (e) {
+          // If not added, add it
+          if (e && (e.code === 4902 || (e.data && e.data.originalError && e.data.originalError.code === 4902))) {
+            await window.ethereum.request({
+              method: "wallet_addEthereumChain",
+              params: [{
+                chainId: CURTIS.chainIdHex,
+                chainName: CURTIS.chainName,
+                nativeCurrency: CURTIS.nativeCurrency,
+                rpcUrls: CURTIS.rpcUrls,
+                blockExplorerUrls: CURTIS.blockExplorerUrls
+              }]
+            });
+          } else {
+            throw e;
+          }
+        }
+        // refresh provider network view
+        provider = new ethers.BrowserProvider(window.ethereum);
+        if (signer) signer = await provider.getSigner();
+        await refreshChainLabel();
+        setStatus("on Curtis");
+      }
+
+      function getRaceContract() {
+        if (!signer) throw new Error("Connect wallet first");
+        return new ethers.Contract(getContractAddr(), ABI, signer);
+      }
+
+      async function ensureCurtis() {
+        const net = await provider.getNetwork(
 
