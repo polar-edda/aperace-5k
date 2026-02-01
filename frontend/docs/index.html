@@ -1,1 +1,216 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>ApeRace 5K — ApeChain</title>
+
+  <style>
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont;
+      max-width: 760px;
+      margin: 32px auto;
+      padding: 0 16px;
+    }
+    button, input {
+      padding: 10px 14px;
+      margin: 6px 6px 6px 0;
+      font-size: 15px;
+    }
+    .box {
+      border: 1px solid #ddd;
+      border-radius: 14px;
+      padding: 16px;
+    }
+    .row { margin: 10px 0; }
+    code {
+      background: #f4f4f4;
+      padding: 3px 6px;
+      border-radius: 6px;
+    }
+    .ok { color: #0a7; }
+    .bad { color: #c22; }
+    .muted { color: #666; }
+  </style>
+</head>
+
+<body>
+
+<h1>ApeRace 5K — ApeChain Mainnet</h1>
+
+<div class="box">
+
+  <div class="row">
+    <button id="connect">Connect Wallet</button>
+    <button id="switch">Switch / Add ApeChain</button>
+  </div>
+
+  <div class="row">
+    Wallet: <code id="addr">not connected</code><br/>
+    Chain: <code id="chain">?</code>
+  </div>
+
+  <hr/>
+
+  <div class="row">
+    <input id="contract" placeholder="Race5k contract address (0x...)" size="44"/>
+    <button id="save">Save</button>
+  </div>
+
+  <div class="row">
+    <button id="start">startRace()</button>
+  </div>
+
+  <div class="row">
+    <input id="cp" type="number" min="1" max="10" value="1"/>
+    <button id="checkpoint">submitCheckpoint()</button>
+  </div>
+
+  <div class="row">
+    <button id="refresh">Refresh State</button>
+  </div>
+
+  <div class="row">
+    Status: <span id="status" class="muted">idle</span><br/>
+    startTime: <code id="startTime">-</code><br/>
+    lastCheckpoint: <code id="lastCp">-</code><br/>
+    finished: <code id="finished">-</code><br/>
+    Tx: <span id="tx">-</span>
+  </div>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/ethers@6.13.2/dist/ethers.umd.min.js"></script>
+
+<script>
+/* =========================
+   ApeChain mainnet config
+========================= */
+const APECHAIN = {
+  chainIdHex: "0x8183", // 33139
+  chainIdDec: 33139,
+  chainName: "ApeChain",
+  rpcUrls: ["https://rpc.apechain.com/http"],
+  explorer: "https://apescan.io",
+  nativeCurrency: { name: "ApeCoin", symbol: "APE", decimals: 18 }
+};
+
+/* =========================
+   Minimal ABI
+========================= */
+const ABI = [
+  "function startRace()",
+  "function submitCheckpoint(uint8)",
+  "function runners(address) view returns (uint8,uint256,bool)"
+];
+
+let provider, signer, user, contract;
+
+/* =========================
+   Helpers
+========================= */
+const el = id => document.getElementById(id);
+const status = (t, ok=true) => {
+  el("status").textContent = t;
+  el("status").className = ok ? "ok" : "bad";
+};
+
+function explorerTx(hash) {
+  el("tx").innerHTML =
+    `<a href="${APECHAIN.explorer}/tx/${hash}" target="_blank">${hash.slice(0,10)}…</a>`;
+}
+
+/* =========================
+   Wallet
+========================= */
+async function connect() {
+  provider = new ethers.BrowserProvider(window.ethereum);
+  await provider.send("eth_requestAccounts", []);
+  signer = await provider.getSigner();
+  user = await signer.getAddress();
+  el("addr").textContent = user;
+
+  const net = await provider.getNetwork();
+  el("chain").textContent = Number(net.chainId);
+
+  status("connected");
+}
+
+async function switchChain() {
+  try {
+    await ethereum.request({
+      method: "wallet_switchEthereumChain",
+      params: [{ chainId: APECHAIN.chainIdHex }]
+    });
+  } catch (e) {
+    if (e.code === 4902) {
+      await ethereum.request({
+        method: "wallet_addEthereumChain",
+        params: [{
+          chainId: APECHAIN.chainIdHex,
+          chainName: APECHAIN.chainName,
+          rpcUrls: APECHAIN.rpcUrls,
+          nativeCurrency: APECHAIN.nativeCurrency,
+          blockExplorerUrls: [APECHAIN.explorer]
+        }]
+      });
+    } else throw e;
+  }
+  status("on ApeChain");
+}
+
+/* =========================
+   Contract
+========================= */
+function loadContract() {
+  const addr = el("contract").value.trim();
+  if (!addr.startsWith("0x")) throw "Invalid contract address";
+  contract = new ethers.Contract(addr, ABI, signer);
+}
+
+async function startRace() {
+  const tx = await contract.startRace();
+  explorerTx(tx.hash);
+  await tx.wait();
+  status("race started");
+}
+
+async function submitCheckpoint() {
+  const idx = Number(el("cp").value);
+  const tx = await contract.submitCheckpoint(idx);
+  explorerTx(tx.hash);
+  await tx.wait();
+  status("checkpoint submitted");
+}
+
+async function refreshState() {
+  const r = await contract.runners(user);
+  el("lastCp").textContent = r[0];
+  el("startTime").textContent = r[1] == 0 ? "-" : r[1];
+  el("finished").textContent = r[2];
+  status("state refreshed");
+}
+
+/* =========================
+   UI bindings
+========================= */
+el("connect").onclick = () => connect().catch(e=>status(e,false));
+el("switch").onclick = () => switchChain().catch(e=>status(e,false));
+el("save").onclick = () => {
+  localStorage.setItem("aperace_contract", el("contract").value);
+  loadContract();
+  status("contract loaded");
+};
+el("start").onclick = () => startRace().catch(e=>status(e,false));
+el("checkpoint").onclick = () => submitCheckpoint().catch(e=>status(e,false));
+el("refresh").onclick = () => refreshState().catch(e=>status(e,false));
+
+/* restore contract */
+const saved = localStorage.getItem("aperace_contract");
+if (saved) el("contract").value = saved;
+
+</script>
+
+</body>
+</html>
 
